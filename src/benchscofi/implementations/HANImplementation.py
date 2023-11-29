@@ -324,6 +324,7 @@ class HAN(nn.Module):
         nn.init.xavier_uniform_(self.weights.weight)
 
     def forward(self, g, feature):
+        import ipdb; ipdb.set_trace()
         h = {'drug': self.drug_emb(feature['drug']),
              'disease': self.dis_emb(feature['disease'])}
 

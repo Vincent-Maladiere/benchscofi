@@ -3,7 +3,7 @@
 #https://github.com/gu-yaowen/MilGNet/blob/a0a129311a07feb928580ee7695d4321f24fd5c3/baseline/HAN_imp.py
 from stanscofi.models import BasicModel
 from stanscofi.preprocessing import CustomScaler
-from benchscofi.implementations import HANImplementation
+from benchscofi.implementations import HANImplementation as han_implementation
 
 import os
 import dgl
@@ -40,8 +40,8 @@ class HAN(BasicModel):
         disease_disease = self.scalerP.fit_transform(dataset.users.T.toarray().copy(), subset=None)
         disease_disease = np.nan_to_num(disease_disease, nan=0) ##       
         disease_disease = disease_disease if (disease_disease.shape[0]==disease_disease.shape[1]) else np.corrcoef(disease_disease)
-        drug_drug_link = HANImplementation.topk_filtering(drug_drug, self.k)
-        disease_disease_link = HANImplementation.topk_filtering(disease_disease, self.k)
+        drug_drug_link = han_implementation.topk_filtering(drug_drug, self.k)
+        disease_disease_link = han_implementation.topk_filtering(disease_disease, self.k)
         drug_disease = dataset.ratings.toarray()
         drug_disease[drug_disease<0] = 0
         drug_disease_link = np.array(np.where(drug_disease == 1)).T
@@ -65,11 +65,11 @@ class HAN(BasicModel):
         return [g, data, label, shp] if (is_training) else [g]
         
     def model_fit(self, g_train, train_data, train_label, shp):
-        HANImplementation.set_seed(self.seed)
+        han_implementation.set_seed(self.seed)
         feature = {'drug': g_train.nodes['drug'].data['h'],
                    'disease': g_train.nodes['disease'].data['h']}
 
-        model = HANImplementation.HAN(in_feats=[feature['drug'].shape[1],
+        model = han_implementation.HAN(in_feats=[feature['drug'].shape[1],
                               feature['disease'].shape[1]],
                     meta_paths=[['drug-disease', 'disease-drug'],
                                 ['disease-drug', 'drug-disease'],
@@ -98,8 +98,11 @@ class HAN(BasicModel):
 
             if epoch % 100 == 0 or epoch == self.epoch - 1:
                 model.eval()
-                AUC, AUPR = HANImplementation.get_metrics_auc(train_label.detach().cpu().numpy(),
-                                            pred_score.detach().cpu().numpy())
+                train_label_ = train_label.detach().cpu().numpy()
+                pred_score_ = pred_score.detach().cpu().numpy()
+                AUC, AUPR = han_implementation.get_metrics_auc(
+                    train_label_, pred_score_
+                )
                 print('Epoch {} Loss: {:.3f}; Train: AUC {:.3f}, '
                       'AUPR {:.3f}'.format(epoch, loss.item(), AUC, AUPR))
         self.estimator = {"predictions": torch.sigmoid(model(g_train, feature)).detach().cpu().numpy()}

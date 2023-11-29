@@ -75,20 +75,20 @@ def get_dataset(folder):
 	A = pd.read_csv(f"{folder}/ratings_mat.csv", index_col=0)
 	P = pd.read_csv(f"{folder}/users.csv", index_col=0)
 	S = pd.read_csv(f"{folder}/items.csv", index_col=0)
-	return Dataset(**{"ratings": A, "users": P, "items": S})
+	return Dataset(ratings=A, users=P, items=S)
 
 
 def main():
 	
 	dataset = get_dataset(folder=DATA_FOLDER)
 
-	train_folds, test_folds, _ = random_simple_split(dataset, 0.20)
+	(train_folds, test_folds), _ = random_simple_split(dataset, 0.20)
 	train_dataset = dataset.subset(train_folds, subset_name="Train")
 	test_dataset = dataset.subset(test_folds, subset_name="Test")
 	train_dataset.summary()
 	test_dataset.summary()
 
-	model = HAN(PARAMS)
+	model = HANBench(PARAMS)
 	model.fit(train_dataset, seed=SEED)  # single fit
 
 	scores = model.predict_proba(test_dataset)
