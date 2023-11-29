@@ -8,6 +8,7 @@ from sklearn.impute import IterativeImputer
 
 from stanscofi.datasets import Dataset
 from stanscofi.training_testing import random_simple_split
+from stanscofi.preprocessing import CustomScaler
 
 from benchscofi.utils import rowwise_metrics
 from benchscofi.HAN import HAN
@@ -18,10 +19,58 @@ DATA_FOLDER = "data"
 PARAMS = {
     "k": 15,
     "learning_rate": 1e-3,
-    "epoch": 100, #1000,
+    "epoch": 1000, #1000,
     "weight_decay": 0.0,
     "seed": SEED,
 }
+np.random.seed(SEED)
+lambda_ = 1e2
+
+def select_max_var_features(features, n=50):
+    features_var = np.nanvar(features, axis=1)
+    sorted_indexes = (-features_var).argsort()[:n]
+    selected_features = features[sorted_indexes]
+    return selected_features
+
+class HANBaseline(HAN):
+    def __init__(self, params=None):
+        super().__init__(params)
+        self.name = "HAN1"
+
+    def preprocessing(self, dataset, inf=2, is_training=True):
+        if (self.scalerS is None):
+            self.scalerS = CustomScaler(posinf=inf, neginf=-inf)
+        drug_drug = self.scalerS.fit_transform(dataset.items.T.toarray().copy(), subset=50)
+        drug_drug = np.nan_to_num(drug_drug, nan=0) ##
+        drug_drug = drug_drug if (drug_drug.shape[0]==drug_drug.shape[1]) else np.corrcoef(drug_drug)
+        if (self.scalerP is None):
+            self.scalerP = CustomScaler(posinf=inf, neginf=-inf)
+        disease_disease = self.scalerP.fit_transform(dataset.users.T.toarray().copy(), subset=50)
+        disease_disease = np.nan_to_num(disease_disease, nan=0) ##
+        disease_disease = disease_disease if (disease_disease.shape[0]==disease_disease.shape[1]) else np.corrcoef(disease_disease)
+        drug_drug_link = HANImplementation.topk_filtering(drug_drug, self.k)
+        disease_disease_link = HANImplementation.topk_filtering(disease_disease, self.k)
+        drug_disease = dataset.ratings.toarray()
+        drug_disease[drug_disease<0] = 0
+        drug_disease_link = np.array(np.where(drug_disease == 1)).T
+        disease_drug_link = np.array(np.where(drug_disease.T == 1)).T
+        graph_data = {('drug', 'drug-drug', 'drug'): (torch.tensor(drug_drug_link[:, 0]),
+                                                  torch.tensor(drug_drug_link[:, 1])),
+                  ('drug', 'drug-disease', 'disease'): (torch.tensor(drug_disease_link[:, 0]),
+                                                        torch.tensor(drug_disease_link[:, 1])),
+                  ('disease', 'disease-drug', 'drug'): (torch.tensor(disease_drug_link[:, 0]),
+                                                        torch.tensor(disease_drug_link[:, 1])),
+                  ('disease', 'disease-disease', 'disease'): (torch.tensor(disease_disease_link[:, 0]),
+                                                              torch.tensor(disease_disease_link[:, 1]))}
+        g = dgl.heterograph(graph_data)
+        drug_feature = np.hstack((drug_drug, np.zeros(drug_disease.shape)))
+        dis_feature = np.hstack((np.zeros(drug_disease.T.shape), disease_disease))
+        g.nodes['drug'].data['h'] = torch.from_numpy(drug_feature).to(torch.float32)
+        g.nodes['disease'].data['h'] = torch.from_numpy(dis_feature).to(torch.float32)
+        data = torch.tensor(np.column_stack((dataset.folds.row, dataset.folds.col)).astype('int64')).to(self.device)
+        label = torch.tensor(drug_disease[dataset.folds.row, dataset.folds.col].flatten()).float().to(self.device)
+        shp = dataset.ratings.shape
+        return [g, data, label, shp] if (is_training) else [g]
 
 
 class HANBench(HAN):
@@ -32,35 +81,42 @@ class HANBench(HAN):
     def preprocessing(self, dataset, inf=2, is_training=True):
         ################## TO MODIFY (BEGIN)
         if (self.scalerS is None):
-            self.scalerS = IterativeImputer(max_iter=1, random_state=SEED)
+            self.scalerS = IterativeImputer(max_iter=25, random_state=SEED)
         if (self.scalerP is None):
-            self.scalerP = IterativeImputer(max_iter=1, random_state=SEED)
+            self.scalerP = IterativeImputer(max_iter=25, random_state=SEED)
         ################## TO MODIFY (END)
 
-        item_features = dataset.items.T.toarray().copy()
-        uses_features = dataset.users.T.toarray().copy()
-
-        item_features_var = item_features.var(axis=0).sort_values(ascending=False)
-        item_features[item_features==0] = np.nan
-        thres=item_features_var[50]
-        item_features[item_features.abs()<thres] = np.nan
-        item_features = item_features.dropna(how="all")
+        item_features = dataset.items.toarray().copy()
+        users_features = dataset.users.toarray().copy()
+        item_features = select_max_var_features(item_features).T
+        users_features = select_max_var_features(users_features).T
 
         print('Preprocessing starts...')
         print('Missing value imputation starts...')
 
-        drug_drug = self.scalerS.fit_transform()
-        disease_disease = self.scalerP.fit_transform()
+        drug_drug = self.scalerS.fit_transform(item_features)
+        disease_disease = self.scalerP.fit_transform(users_features)
+        print(np.sum(np.isnan(disease_disease)))
+
         print('Missing value imputation finished!')
-
-        drug_drug = dataset.items.T.toarray().copy()
-        disease_disease = dataset.users.T.toarray().copy()
-
+        drug_drug = np.nan_to_num(drug_drug, copy=True, nan=np.nan, posinf=inf, neginf=-inf)
+        disease_disease = np.nan_to_num(disease_disease, copy=True, nan=np.nan, posinf=inf, neginf=-inf)
+        print(np.sum(np.isnan(disease_disease)))
         #drug_drug = np.nan_to_num(drug_drug, nan=0) ##
         #disease_disease = np.nan_to_num(disease_disease, nan=0) ##
+        sigma = 1e-4
+        perturbation = np.random.normal(scale=sigma, size=disease_disease.shape)
+        print('*****************************')
+        print(np.min(perturbation), np.max(perturbation))
+        disease_disease += perturbation
 
-        drug_drug = drug_drug if (drug_drug.shape[0]==drug_drug.shape[1]) else np.corrcoef(drug_drug)
-        disease_disease = disease_disease if (disease_disease.shape[0]==disease_disease.shape[1]) else np.corrcoef(disease_disease)
+        drug_drug = np.corrcoef(drug_drug)
+        disease_disease = np.corrcoef(disease_disease)
+        #
+        # print(np.sum(np.isnan(disease_disease)))
+        # print(np.max(drug_drug), np.min(drug_drug))
+        # print(np.max(disease_disease), np.min(disease_disease))
+
         drug_drug_link = HANImplementation.topk_filtering(drug_drug, self.k)
         disease_disease_link = HANImplementation.topk_filtering(disease_disease, self.k)
         drug_disease = dataset.ratings.toarray()
@@ -104,6 +160,7 @@ def main():
 	test_dataset.summary()
 
 	model = HANBench(PARAMS)
+	model.subset = 50
 	model.fit(train_dataset, seed=SEED)  # single fit
 
 	scores = model.predict_proba(test_dataset)
